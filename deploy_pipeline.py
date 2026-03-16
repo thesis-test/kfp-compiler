@@ -113,7 +113,7 @@ def compile_pipeline(pipeline_dir: pathlib.Path, output_path: pathlib.Path) -> N
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        sys.executable, "-m", "kfp", "dsl", "compile",
+        "kfp", "dsl", "compile",
         "--py",     str(pipeline_dir / "main.py"),
         "--output", str(output_path),
     ]
