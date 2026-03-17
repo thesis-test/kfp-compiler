@@ -167,13 +167,13 @@ def oras_push(
 
     cmd = [
         "oras", "push", ref,
-        f"{named}:{_OCI_LAYER_TYPE}",
+        f"{named.name}:{_OCI_LAYER_TYPE}",
         "--artifact-type", _OCI_ARTIFACT_TYPE,
         "--username", username,
         "--password-stdin",   # avoids password in process args / ps output
     ]
     log.info("  ORAS push → %s", ref)
-    _run(cmd, input_text=password)
+    _run(cmd, input_text=password, cwd=str(named.parent))
     log.info("  Pushed    ✓")
     return named
 
@@ -201,7 +201,7 @@ def oras_pull(
         "--password-stdin",
     ]
     log.info("  ORAS pull ← %s", ref)
-    _run(cmd, input_text=password)
+    _run(cmd, input_text=password, cwd=str(dest_dir))
 
     # oras preserves layer filenames; we pushed it as <pipeline_name>.yaml
     yaml_path = dest_dir / f"{pipeline_name}.yaml"
