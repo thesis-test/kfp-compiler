@@ -338,8 +338,7 @@ def _load_env() -> dict:
     oci_repository = os.environ.get("OCI_REPOSITORY", "").strip()
     oci_username   = os.environ.get("OCI_USERNAME",  "").strip()
     oci_password   = os.environ.get("OCI_PASSWORD",  "").strip()
-    kfp_host       = os.environ.get("KFP_HOST",
-                         "http://ml-pipeline.kubeflow.svc.cluster.local:8888")
+    kfp_host       = os.environ.get("KFP_HOST") or "http://ml-pipeline.kubeflow.svc.cluster.local:8888"
 
     missing = [k for k, v in {
         "OCI_REGISTRY":   oci_registry,
