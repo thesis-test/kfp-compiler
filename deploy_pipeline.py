@@ -170,7 +170,8 @@ def oras_push(
         f"{named.name}:{_OCI_LAYER_TYPE}",
         "--artifact-type", _OCI_ARTIFACT_TYPE,
         "--username", username,
-        "--password-stdin",   # avoids password in process args / ps output
+        "--password-stdin",
+        "--plain-http",
     ]
     log.info("  ORAS push → %s", ref)
     _run(cmd, input_text=password, cwd=str(named.parent))
@@ -199,6 +200,7 @@ def oras_pull(
         "--output", str(dest_dir),
         "--username", username,
         "--password-stdin",
+        "--plain-http",
     ]
     log.info("  ORAS pull ← %s", ref)
     _run(cmd, input_text=password, cwd=str(dest_dir))
