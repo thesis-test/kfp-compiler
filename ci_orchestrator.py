@@ -136,7 +136,7 @@ def main():
     run_cmd(["git", "clone", auth_gitops_url, str(gitops_dir)])
 
     for p_name, crd_filename in generated_crds:
-        target_dir = gitops_dir / "apps" / tenant_namespace / p_name
+        target_dir = gitops_dir / tenant_namespace / branch_name / p_name
         target_dir.mkdir(parents=True, exist_ok=True)
         
         os.rename(crd_filename, target_dir / "pipeline-crd.yaml")
