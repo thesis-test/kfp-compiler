@@ -62,7 +62,8 @@ spec:
 def main():
     try:
         repo_url = os.environ["REPO_URL"]
-        branch_name = os.environ["BRANCH_NAME"]
+        raw_branch_name = os.environ["BRANCH_NAME"]
+        branch_name = raw_branch_name.removeprefix("refs/heads/")
         tenant_namespace = os.environ["TENANT_NAMESPACE"]
         commit_sha = os.environ["COMMIT_SHA"]
         short_sha = commit_sha[:7]
