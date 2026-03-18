@@ -2,14 +2,14 @@
 # Stage 1: Toolchain Downloader
 # Securely sources the ORAS binary from the official OCI image.
 # ---------------------------------------------------------------------------
-FROM ghcr.io/oras-project/oras:v1.2.2 AS oras-source
+FROM ghcr.io/oras-project/oras:v1.3.1 AS oras-source
 
 # ---------------------------------------------------------------------------
 # Stage 2: MLOps CI Builder (Final Runtime)
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm
 
-ENV KFP_VERSION="2.15.0"
+ENV KFP_VERSION="2.16.0"
 ENV VIRTUAL_ENV="/opt/venv"
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
 
