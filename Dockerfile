@@ -9,7 +9,7 @@ FROM ghcr.io/oras-project/oras:v1.3.1 AS oras-source
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm
 
-ENV KFP_VERSION="2.16.0"
+ENV KUBEFLOW_PACKAGE_VERSION="2.16.0"
 ENV VIRTUAL_ENV="/opt/venv"
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
 
@@ -25,7 +25,7 @@ RUN groupadd -g 1000 argo-ci && \
 
 RUN python -m venv ${VIRTUAL_ENV} && \
     pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir kfp==${KFP_VERSION} PyYAML==6.0.1 && \
+    pip install --no-cache-dir kfp==${KUBEFLOW_PACKAGE_VERSION} PyYAML==6.0.1 && \
     chown -R argo-ci:argo-ci ${VIRTUAL_ENV}
 
 COPY ci_orchestrator.py /usr/local/bin/ci_orchestrator.py
