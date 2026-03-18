@@ -18,32 +18,12 @@ def run_cmd(cmd: list[str], hide_output: bool = False, input_text: str = None) -
         print(f"Error executing command: {' '.join(cmd)}\n{e.stderr}", file=sys.stderr)
         sys.exit(1)
 
-def generate_crd_yaml(pipeline_name: str, namespace: str, schedule: str, oci_ref: str, short_sha: str) -> str:
-    yaml_docs = []
-    
-    yaml_docs.append(f"""apiVersion: pipelines.kubeflow.org/v2beta1
-kind: Pipeline
-metadata:
-  name: {pipeline_name}
-  namespace: {namespace}
-spec:
-  displayName: "{pipeline_name}"
-""")
-
-    yaml_docs.append(f"""apiVersion: pipelines.kubeflow.org/v2beta1
-kind: PipelineVersion
-metadata:
-  name: {pipeline_name}-{short_sha}
-  namespace: {namespace}
-spec:
-  pipelineRef:
-    name: {pipeline_name}
-  displayName: "Commit {short_sha}"
-  packageUrl: "http://{oci_ref}"
-""")
-
-    if schedule and schedule.lower() != "none":
-        yaml_docs.append(f"""apiVersion: pipelines.kubeflow.org/v1beta1
+def generate_crd_yaml(pipeline_name: str, namespace: str, schedule: str, oci_ref: str) -> str:
+    # Only generate a CRD if there is an actual recurring schedule declared
+    if not schedule or schedule.lower() == "none":
+        return ""
+        
+    return f"""apiVersion: kubeflow.org/v1beta1
 kind: ScheduledWorkflow
 metadata:
   name: {pipeline_name}-schedule
@@ -53,17 +33,19 @@ spec:
     cronSchedule:
       cron: "{schedule}"
   workflow:
-    pipelineVersionRef:
-      name: {pipeline_name}-{short_sha}
-""")
-    
-    return "\n---\n".join(yaml_docs)
+    source:
+      url: "http://{oci_ref}"
+status: {{}}
+"""
 
 def main():
     try:
         repo_url = os.environ["REPO_URL"]
+        
+        # Normalize the branch name from GitHub's webhook format
         raw_branch_name = os.environ["BRANCH_NAME"]
         branch_name = raw_branch_name.removeprefix("refs/heads/")
+        
         tenant_namespace = os.environ["TENANT_NAMESPACE"]
         commit_sha = os.environ["COMMIT_SHA"]
         short_sha = commit_sha[:7]
@@ -91,7 +73,7 @@ def main():
     
     run_cmd(["git", "clone", "--branch", branch_name, auth_repo_url, "."])
 
-    # 2. Parse Configuration
+    # 2. Parse project-config.yaml
     config_path = Path("project-config.yaml")
     if not config_path.exists():
         print("Error: project-config.yaml not found in repository root.", file=sys.stderr)
@@ -102,7 +84,7 @@ def main():
 
     generated_crds = []
 
-    # 3. Compile and Push Pipelines
+    # 3. Compile and Push
     for experiment in config.get("experiments", []):
         for pipeline in experiment.get("pipelines", []):
             p_name = pipeline["name"]
@@ -132,18 +114,20 @@ def main():
             ]
             run_cmd(push_cmd, input_text=oci_password)
 
-            crd_content = generate_crd_yaml(p_name, tenant_namespace, p_schedule, oci_ref, short_sha)
-            crd_filename = f"{p_name}-crd.yaml"
-            with open(crd_filename, "w") as f:
-                f.write(crd_content)
-            
-            generated_crds.append((p_name, crd_filename))
+            crd_content = generate_crd_yaml(p_name, tenant_namespace, p_schedule, oci_ref)
+            if crd_content:
+                crd_filename = f"{p_name}-crd.yaml"
+                with open(crd_filename, "w") as f:
+                    f.write(crd_content)
+                generated_crds.append((p_name, crd_filename))
+            else:
+                print(f"✅ Pipeline '{p_name}' has no schedule. Pushed to Harbor, skipping GitOps CRD.")
 
     if not generated_crds:
-        print("No pipelines processed. Exiting.")
+        print("No scheduled pipelines processed. Exiting cleanly.")
         sys.exit(0)
 
-    # 4. Commit CRDs to GitOps Repo
+    # 4. Push to GitOps
     print("🐙 Cloning GitOps Infrastructure Repository...")
     gitops_https = gitops_repo_url.replace("https://", "")
     auth_gitops_url = f"https://x-access-token:{git_token}@{gitops_https}"
@@ -167,7 +151,7 @@ def main():
         sys.exit(0)
 
     print("🚀 Pushing updated CRDs to GitOps repository...")
-    run_cmd(["git", "-C", str(gitops_dir), "commit", "-m", f"chore: update pipelines to sha-{short_sha}"])
+    run_cmd(["git", "-C", str(gitops_dir), "commit", "-m", f"chore: update scheduled pipelines to sha-{short_sha}"])
     run_cmd(["git", "-C", str(gitops_dir), "push", "origin", "main"])
     print("✅ Successfully pushed all CRDs to GitOps repository.")
 
