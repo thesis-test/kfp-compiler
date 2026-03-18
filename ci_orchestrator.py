@@ -79,7 +79,7 @@ def main():
 
     print("🐳 Authenticating with OCI Registry...")
     run_cmd(
-        ["oras", "login", oci_registry, "-u", oci_username, "--password-stdin"],
+        ["oras", "login", oci_registry, "-u", oci_username, "--password-stdin", "--insecure"],
         hide_output=True,
         input_text=oci_password
     )
@@ -111,7 +111,7 @@ def main():
             run_cmd(["kfp", "dsl", "compile", "--py", str(main_py_path), "--output", compiled_yaml])
 
             oci_ref = f"{oci_registry}/{oci_repository}/{p_name}:sha-{short_sha}"
-            run_cmd(["oras", "push", oci_ref, compiled_yaml])
+            run_cmd(["oras", "push", oci_ref, compiled_yaml, "--plain-http"])
 
             crd_content = generate_crd_yaml(p_name, tenant_namespace, p_schedule, oci_ref, short_sha)
             crd_filename = f"{p_name}-crd.yaml"
