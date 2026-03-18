@@ -39,7 +39,7 @@ spec:
   pipelineRef:
     name: {pipeline_name}
   displayName: "Commit {short_sha}"
-  packageUrl: "https://{oci_ref}"
+  packageUrl: "http://{oci_ref}"
 """)
 
     if schedule and schedule.lower() != "none":
@@ -61,6 +61,8 @@ spec:
 
 def main():
     try:
+        repo_url = os.environ["REPO_URL"]
+        branch_name = os.environ["BRANCH_NAME"]
         tenant_namespace = os.environ["TENANT_NAMESPACE"]
         commit_sha = os.environ["COMMIT_SHA"]
         short_sha = commit_sha[:7]
@@ -77,13 +79,18 @@ def main():
     with open(git_token_path, "r") as f:
         git_token = f.read().strip()
 
-    print("🐳 Authenticating with OCI Registry...")
-    run_cmd(
-        ["oras", "login", oci_registry, "-u", oci_username, "--password-stdin", "--insecure"],
-        hide_output=True,
-        input_text=oci_password
-    )
+    # 1. Clone the ML Repository
+    print("📥 Cloning ML Code Repository...")
+    repo_url_https = repo_url.replace("https://", "")
+    auth_repo_url = f"https://x-access-token:{git_token}@{repo_url_https}"
+    
+    workspace_dir = Path("/workspace")
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    os.chdir(workspace_dir)
+    
+    run_cmd(["git", "clone", "--branch", branch_name, auth_repo_url, "."])
 
+    # 2. Parse Configuration
     config_path = Path("project-config.yaml")
     if not config_path.exists():
         print("Error: project-config.yaml not found in repository root.", file=sys.stderr)
@@ -94,6 +101,7 @@ def main():
 
     generated_crds = []
 
+    # 3. Compile and Push Pipelines
     for experiment in config.get("experiments", []):
         for pipeline in experiment.get("pipelines", []):
             p_name = pipeline["name"]
@@ -111,7 +119,17 @@ def main():
             run_cmd(["kfp", "dsl", "compile", "--py", str(main_py_path), "--output", compiled_yaml])
 
             oci_ref = f"{oci_registry}/{oci_repository}/{p_name}:sha-{short_sha}"
-            run_cmd(["oras", "push", oci_ref, compiled_yaml, "--plain-http"])
+            
+            print(f"🐳 Pushing {p_name} to Harbor...")
+            push_cmd = [
+                "oras", "push", oci_ref,
+                f"{compiled_yaml}:application/yaml",
+                "--artifact-type", "application/vnd.kubeflow.pipeline.v2+yaml",
+                "--username", oci_username,
+                "--password-stdin",
+                "--plain-http"
+            ]
+            run_cmd(push_cmd, input_text=oci_password)
 
             crd_content = generate_crd_yaml(p_name, tenant_namespace, p_schedule, oci_ref, short_sha)
             crd_filename = f"{p_name}-crd.yaml"
@@ -124,6 +142,7 @@ def main():
         print("No pipelines processed. Exiting.")
         sys.exit(0)
 
+    # 4. Commit CRDs to GitOps Repo
     print("🐙 Cloning GitOps Infrastructure Repository...")
     gitops_https = gitops_repo_url.replace("https://", "")
     auth_gitops_url = f"https://x-access-token:{git_token}@{gitops_https}"
