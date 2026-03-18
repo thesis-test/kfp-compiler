@@ -1,38 +1,38 @@
-FROM --platform=linux/amd64 python:3.11-slim
+# ---------------------------------------------------------------------------
+# Stage 1: Toolchain Downloader
+# Securely sources the ORAS binary from the official OCI image.
+# ---------------------------------------------------------------------------
+FROM ghcr.io/oras-project/oras:v1.2.2 AS oras-source
 
-# Non-root user matching the securityContext in the WorkflowTemplates
-RUN groupadd --gid 1000 appgroup \
-    && useradd  --uid 1000 --gid appgroup --no-create-home appuser
+# ---------------------------------------------------------------------------
+# Stage 2: MLOps CI Builder (Final Runtime)
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm
 
-# ── System dependencies ─────────────────────────────────────────────────────
-RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends git curl ca-certificates \
+ENV KFP_VERSION="2.15.0"
+ENV VIRTUAL_ENV="/opt/venv"
+ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# ── ORAS CLI (OCI Registry As Storage — CNCF standard) ─────────────────────
-# ORAS speaks the OCI Distribution Spec natively: works with Harbor, Nexus,
-# ECR, ACR, GCR — any compliant registry.  kfp.registry.RegistryClient only
-# targets Google Artifact Registry and cannot be used here.
-ARG ORAS_VERSION=1.2.2
-# SHA256 from https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_checksums.txt
-ARG ORAS_SHA256=bff970346470e5ef888e9f2c0bf7f8ee47283f5a45207d6e7a037da1fb0eae0d
-RUN curl -sSL \
-    "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
-    -o /tmp/oras.tar.gz \
-    && printf '%s  /tmp/oras.tar.gz\n' "${ORAS_SHA256}" | sha256sum --check --strict \
-    && tar -xz -C /usr/local/bin -f /tmp/oras.tar.gz oras \
-    && rm /tmp/oras.tar.gz \
-    && oras version
+COPY --from=oras-source /bin/oras /usr/local/bin/oras
 
-# ── Python dependencies ─────────────────────────────────────────────────────
-# kfp ships the `kfp dsl compile` CLI and kfp.client.  No boto3 needed —
-# the OCI registry (via ORAS) is the single artifact store.
-RUN pip install --no-cache-dir "kfp==2.16.0"
+RUN groupadd -g 1000 argo-ci && \
+    useradd -u 1000 -g argo-ci -m -s /bin/bash argo-ci
 
-# ── Application ─────────────────────────────────────────────────────────────
-WORKDIR /opt/kfp-compiler
-COPY deploy_pipeline.py /opt/kfp-compiler/deploy_pipeline.py
+RUN python -m venv ${VIRTUAL_ENV} && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir kfp==${KFP_VERSION} PyYAML==6.0.1 && \
+    chown -R argo-ci:argo-ci ${VIRTUAL_ENV}
 
-USER appuser
+COPY ci_orchestrator.py /usr/local/bin/ci_orchestrator.py
+RUN chmod +x /usr/local/bin/ci_orchestrator.py && \
+    chown argo-ci:argo-ci /usr/local/bin/ci_orchestrator.py
 
-ENTRYPOINT ["python", "/opt/kfp-compiler/deploy_pipeline.py"]
+USER 1000
+WORKDIR /workspace
+
+ENTRYPOINT ["python3", "/usr/local/bin/ci_orchestrator.py"]
