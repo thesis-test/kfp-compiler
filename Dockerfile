@@ -1,38 +1,52 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Toolchain Downloader
-# Securely sources the ORAS binary from the official OCI image.
 # ---------------------------------------------------------------------------
 FROM ghcr.io/oras-project/oras:v1.3.1 AS oras-source
 
 # ---------------------------------------------------------------------------
-# Stage 2: MLOps CI Builder (Final Runtime)
+# Stage 2: Python Builder (Dependency Isolation)
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS builder
+
+ENV VIRTUAL_ENV="/opt/venv"
+RUN python -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
+
+# Install dependencies and pre-compile Python bytecode for faster cold starts
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir kfp==2.16.0 PyYAML==6.0.1 && \
+    python -m compileall ${VIRTUAL_ENV}
+
+# ---------------------------------------------------------------------------
+# Stage 3: Final Runtime
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm
 
-ENV KUBEFLOW_PACKAGE_VERSION="2.16.0"
 ENV VIRTUAL_ENV="/opt/venv"
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
+# Force Python to flush logs immediately to Argo
+ENV PYTHONUNBUFFERED=1 
 
+# Install ONLY essential runtime OS dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy ORAS binary
 COPY --from=oras-source /bin/oras /usr/local/bin/oras
 
+# Copy pre-compiled Python environment from builder (Owned by root, Read/Execute for all)
+COPY --from=builder /opt/venv /opt/venv
+
+# Setup unprivileged user
 RUN groupadd -g 1000 argo-ci && \
     useradd -u 1000 -g argo-ci -m -s /bin/bash argo-ci
 
-RUN python -m venv ${VIRTUAL_ENV} && \
-    pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir kfp==${KUBEFLOW_PACKAGE_VERSION} PyYAML==6.0.1 && \
-    chown -R argo-ci:argo-ci ${VIRTUAL_ENV}
-
-COPY ci_orchestrator.py /usr/local/bin/ci_orchestrator.py
-RUN chmod +x /usr/local/bin/ci_orchestrator.py && \
-    chown argo-ci:argo-ci /usr/local/bin/ci_orchestrator.py
+# Copy and pre-compile the execution script
+COPY ci_orchestrator.py /app/ci_orchestrator.py
+RUN python -m py_compile /app/ci_orchestrator.py
 
 USER 1000
 WORKDIR /workspace
 
-ENTRYPOINT ["python3", "/usr/local/bin/ci_orchestrator.py"]
+ENTRYPOINT ["python", "/app/ci_orchestrator.py"]
