@@ -84,6 +84,11 @@ class GitManager:
     def __init__(self, config: AppConfig):
         self.config = config
 
+        logger.info(f"Configuring Git safe.directory for {self.config.workspace_dir}")
+        execute_command([
+            "git", "config", "--global", "--add", "safe.directory", str(self.config.workspace_dir)
+        ])
+
     def _get_token(self) -> str:
         if not self.config.git_token_path.exists():
             logger.critical(f"Git token not found at {self.config.git_token_path}")
