@@ -25,6 +25,7 @@ class AppConfig:
     branch_name: str
     short_sha: str
     kfp_endpoint: str
+    tenant_namespace: str
     repo_url: str = ""
     oci_registry: str = ""
     oci_repository: str = ""
@@ -36,11 +37,19 @@ class AppConfig:
 
     @classmethod
     def from_env(cls, command: str) -> "AppConfig":
+        kfp_endpoint = os.environ.get("KFP_ENDPOINT")
+        tenant_namespace = os.environ.get("TENANT_NAMESPACE")
+
+        if not kfp_endpoint or not tenant_namespace:
+            logger.critical("Infrastructure configuration failed. Missing KFP_ENDPOINT or TENANT_NAMESPACE.")
+            sys.exit(1)
+
         try:
             config = cls(
                 branch_name=os.environ["BRANCH_NAME"].removeprefix("refs/heads/"),
                 short_sha=os.environ["COMMIT_SHA"][:7],
-                kfp_endpoint=os.environ.get("KFP_ENDPOINT", "http://ml-pipeline.kubeflow.svc.cluster.local:8888")
+                kfp_endpoint=kfp_endpoint,
+                tenant_namespace=tenant_namespace
             )
             if command == "plan":
                 config.repo_url = os.environ["REPO_URL"].replace("https://", "")
@@ -126,7 +135,15 @@ class GitManager:
 class PipelineManager:
     def __init__(self, config: AppConfig):
         self.config = config
-        self.client = kfp.Client(host=config.kfp_endpoint)
+
+        token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        token = token_path.read_text().strip() if token_path.exists() else None
+
+        self.client = kfp.Client(
+            host=config.kfp_endpoint,
+            existing_token=token,
+            namespace=config.tenant_namespace
+        )
 
     def compile_pipeline(self, main_py_path: Path, compiled_yaml_path: Path) -> None:
         execute_command(
