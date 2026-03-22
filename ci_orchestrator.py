@@ -31,6 +31,7 @@ class AppConfig:
     oci_repository: str = ""
     oci_username: str = ""
     oci_password: str = ""
+    kfp_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
     git_token_path: Path = Path("/var/run/secrets/github-token/token")
     workspace_dir: Path = Path("/workspace")
     config_file: str = "project-config.yaml"
@@ -49,7 +50,8 @@ class AppConfig:
                 branch_name=os.environ["BRANCH_NAME"].removeprefix("refs/heads/"),
                 short_sha=os.environ["COMMIT_SHA"][:7],
                 kfp_endpoint=kfp_endpoint,
-                tenant_namespace=tenant_namespace
+                tenant_namespace=tenant_namespace,
+                kfp_token_path=Path(os.environ.get("KFP_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"))
             )
             if command == "plan":
                 config.repo_url = os.environ["REPO_URL"].replace("https://", "")
@@ -136,8 +138,13 @@ class PipelineManager:
     def __init__(self, config: AppConfig):
         self.config = config
 
-        token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        token_path = self.config.kfp_token_path
         token = token_path.read_text().strip() if token_path.exists() else None
+
+        if token:
+            logger.info(f"Using KFP auth token from {token_path}")
+        else:
+            logger.warning(f"KFP auth token not found at {token_path}; attempting unauthenticated KFP client")
 
         self.client = kfp.Client(
             host=config.kfp_endpoint,
