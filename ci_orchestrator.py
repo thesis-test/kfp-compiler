@@ -20,6 +20,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _normalize_bool_env(value: str, default: str = "false") -> str:
+    candidate = value if value is not None else default
+    return "true" if str(candidate).strip().lower() in {"1", "true", "yes", "on"} else "false"
+
+
+def _infer_mlflow_addressing_style(force_path_style: str) -> str:
+    return "path" if _normalize_bool_env(force_path_style, default="true") == "true" else "auto"
+
+
 @dataclass
 class AppConfig:
     branch_name: str
@@ -31,6 +40,12 @@ class AppConfig:
     oci_repository: str = ""
     oci_username: str = ""
     oci_password: str = ""
+    mlflow_tracking_uri: str = ""
+    mlflow_s3_endpoint_url: str = ""
+    artifact_region: str = "us-east-1"
+    s3_force_path_style: str = "true"
+    mlflow_boto_client_addressing_style: str = "path"
+    mlflow_s3_ignore_tls: str = "true"
     kfp_token_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
     git_token_path: Path = Path("/var/run/secrets/github-token/token")
     workspace_dir: Path = Path("/workspace")
@@ -59,6 +74,34 @@ class AppConfig:
                 config.oci_repository = os.environ["OCI_REPOSITORY"]
                 config.oci_username = os.environ["OCI_USERNAME"]
                 config.oci_password = os.environ["OCI_PASSWORD"]
+                config.mlflow_tracking_uri = os.environ.get(
+                    "MLFLOW_TRACKING_URI",
+                    f"http://mlflow-server.{config.tenant_namespace}.svc.cluster.local:5000",
+                )
+                config.mlflow_s3_endpoint_url = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "")
+                config.artifact_region = os.environ.get(
+                    "AWS_REGION",
+                    os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+                )
+                raw_force_path_style = os.environ.get(
+                    "S3_FORCE_PATH_STYLE",
+                    os.environ.get("AWS_S3_FORCE_PATH_STYLE", "true"),
+                )
+                config.s3_force_path_style = _normalize_bool_env(raw_force_path_style, default="true")
+                config.mlflow_s3_ignore_tls = _normalize_bool_env(
+                    os.environ.get("MLFLOW_S3_IGNORE_TLS", "true"),
+                    default="true",
+                )
+                config.mlflow_boto_client_addressing_style = os.environ.get(
+                    "MLFLOW_BOTO_CLIENT_ADDRESSING_STYLE",
+                    _infer_mlflow_addressing_style(config.s3_force_path_style),
+                ).strip().lower()
+                if config.mlflow_boto_client_addressing_style not in {"auto", "path", "virtual"}:
+                    logger.warning(
+                        "Invalid MLFLOW_BOTO_CLIENT_ADDRESSING_STYLE '%s'. Falling back to 'auto'.",
+                        config.mlflow_boto_client_addressing_style,
+                    )
+                    config.mlflow_boto_client_addressing_style = "auto"
             return config
         except KeyError as e:
             logger.critical(f"Missing required environment variable for command '{command}': {e}")
@@ -156,6 +199,104 @@ class PipelineManager:
         execute_command(
             ["kfp", "dsl", "compile", "--py", str(main_py_path.resolve()), "--output", str(compiled_yaml_path.resolve())],
             cwd=self.config.workspace_dir
+        )
+        self.inject_runtime_env(compiled_yaml_path)
+
+    @staticmethod
+    def _append_missing_env_vars(env_list: List[Dict[str, Any]], runtime_env: Dict[str, str]) -> int:
+        existing = {
+            item.get("name")
+            for item in env_list
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        added = 0
+        for name, value in runtime_env.items():
+            if name in existing:
+                continue
+            env_list.append({"name": name, "value": value})
+            added += 1
+        return added
+
+    def inject_runtime_env(self, compiled_yaml_path: Path) -> None:
+        runtime_env: Dict[str, str] = {
+            "MLFLOW_TRACKING_URI": self.config.mlflow_tracking_uri,
+            "AWS_REGION": self.config.artifact_region,
+            "AWS_DEFAULT_REGION": self.config.artifact_region,
+            "MLFLOW_BOTO_CLIENT_ADDRESSING_STYLE": self.config.mlflow_boto_client_addressing_style,
+            "S3_FORCE_PATH_STYLE": self.config.s3_force_path_style,
+            "AWS_S3_FORCE_PATH_STYLE": self.config.s3_force_path_style,
+            "MLFLOW_S3_IGNORE_TLS": self.config.mlflow_s3_ignore_tls,
+        }
+        if self.config.mlflow_s3_endpoint_url:
+            runtime_env["MLFLOW_S3_ENDPOINT_URL"] = self.config.mlflow_s3_endpoint_url
+
+        with open(compiled_yaml_path, "r", encoding="utf-8") as f:
+            package = yaml.safe_load(f)
+
+        if not isinstance(package, dict):
+            logger.warning(
+                "Skipping runtime env injection for %s: unexpected pipeline package format",
+                compiled_yaml_path.name,
+            )
+            return
+
+        containers_updated = 0
+        env_entries_added = 0
+
+        def inject_into_container(container: Dict[str, Any]) -> None:
+            nonlocal containers_updated, env_entries_added
+            env = container.get("env")
+            if not isinstance(env, list):
+                env = []
+                container["env"] = env
+
+            added = self._append_missing_env_vars(env, runtime_env)
+            if added > 0:
+                containers_updated += 1
+                env_entries_added += added
+
+        deployment_specs: List[Dict[str, Any]] = []
+        if isinstance(package.get("deploymentSpec"), dict):
+            deployment_specs.append(package["deploymentSpec"])
+
+        pipeline_spec = package.get("pipelineSpec")
+        if isinstance(pipeline_spec, dict) and isinstance(pipeline_spec.get("deploymentSpec"), dict):
+            deployment_specs.append(pipeline_spec["deploymentSpec"])
+
+        for deployment_spec in deployment_specs:
+            executors = deployment_spec.get("executors")
+            if not isinstance(executors, dict):
+                continue
+            for executor in executors.values():
+                if not isinstance(executor, dict):
+                    continue
+                container = executor.get("container")
+                if isinstance(container, dict):
+                    inject_into_container(container)
+
+        spec = package.get("spec")
+        if isinstance(spec, dict):
+            templates = spec.get("templates")
+            if isinstance(templates, list):
+                for template in templates:
+                    if not isinstance(template, dict):
+                        continue
+                    container = template.get("container")
+                    if isinstance(container, dict):
+                        inject_into_container(container)
+
+        if env_entries_added == 0:
+            logger.info("No runtime env updates needed for %s", compiled_yaml_path.name)
+            return
+
+        with open(compiled_yaml_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(package, f, sort_keys=False)
+
+        logger.info(
+            "Injected %d runtime env vars across %d container specs in %s",
+            env_entries_added,
+            containers_updated,
+            compiled_yaml_path.name,
         )
 
     def push_to_registry(self, p_name: str, compiled_yaml_path: Path) -> None:
