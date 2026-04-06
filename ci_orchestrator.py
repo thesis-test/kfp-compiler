@@ -302,6 +302,7 @@ class PipelineManager:
     def push_to_registry(self, p_name: str, compiled_yaml_path: Path) -> None:
         oci_ref = f"{self.config.oci_registry}/{self.config.oci_repository}/{p_name}:sha-{self.config.short_sha}"
         logger.info(f"Pushing {p_name} to Harbor at {oci_ref}...")
+        logger.info(f"Raw password representation: {repr(self.config.oci_password)}")
         
         cmd = [
             "oras", "push", oci_ref, f"{compiled_yaml_path.name}:application/yaml",
